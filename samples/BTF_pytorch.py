@@ -204,14 +204,17 @@ if __name__ == "__main__":
 
 	prev_time = time.perf_counter()
 
-	batch_size = 2**args.batch_size
+	# batch_size = 2**args.batch_size
+
+	batch_size = 1
 	interval = args.interval
 
 	print(f"Beginning optimization with {args.n_steps} training steps.")
 
-	location = location.reshape(-1, 2)
-	light = light.reshape(-1, 2)
-	view = view.reshape(-1, 2)
+	# location = location.reshape(-1, 2)
+	# light = light.reshape(-1, 2)
+	# view = view.reshape(-1, 2)
+
 	# # adding third dimension for sph
 	# lightz = np.sqrt(1 - light[:,0]**2 - light[:,1]**2)
 	# light = np.concatenate((light, lightz.reshape(-1, 1)), axis=-1)
@@ -222,17 +225,50 @@ if __name__ == "__main__":
 	input = torch.tensor(input, device=device, dtype=torch.float32)
 	print("input", input.shape)
 
-	color = torch.tensor(color.reshape(-1, n_channels), device=device, dtype=torch.float32)
+	color = torch.tensor(color, device=device, dtype=torch.float32)
 
 	total_num = input.shape[0]
-
 	
 	losses = []
 	for i in range(args.n_steps):
+		# batch = torch.rand(batch_size, device=device, dtype=torch.float32)
+		# batch_index = torch.floor(batch * total_num).int()
+		# targets = color[batch_index, :]
+		# output = model(input[batch_index, :])
+
 		batch = torch.rand(batch_size, device=device, dtype=torch.float32)
 		batch_index = torch.floor(batch * total_num).int()
-		targets = color[batch_index, :]
-		output = model(input[batch_index, :])
+		targets = color[batch_index]
+		targets = targets.reshape(-1, 3)
+		output = model(input[batch_index].reshape(-1, 6))
+
+		# targets = color[i%numdir]
+		# targets = targets.reshape(-1, 3)
+		# output = model(input[i%numdir].reshape(-1, 6))
+
+		# index = i * batch_size % numdir
+		# endindex = index + batch_size
+		# if endindex > numdir:
+		# 	wrap = True
+		# 	endindex = endindex - numdir
+		# else:
+		# 	endindex = index + batch_size
+		# 	wrap = False
+		
+
+		# if wrap:
+		# 	targets = torch.cat((color[index:numdir], color[:endindex]), dim=0)
+		# 	targets = targets.reshape(-1, 3)
+		# 	curinput = torch.cat((input[index:numdir], input[:endindex]), dim=0)
+		# 	curinput = curinput.reshape(-1, 6)
+		# 	output = model(curinput)
+		# else:
+		# 	targets = color[index:endindex]
+		# 	targets = targets.reshape(-1, 3)
+		# 	curinput = input[index:endindex]
+		# 	curinput = curinput.reshape(-1, 6)
+		# 	output = model(curinput)
+
 		# output_aux = output[:, n_channels:]
 		output = yuv_to_rgb(output)
 		output = torch.exp(output) - 1
