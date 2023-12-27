@@ -109,6 +109,7 @@ def get_args():
 	parser.add_argument("--interval", type=int, default=100, help="interval for printing and saving results")
 	parser.add_argument("--prefix", default="leather_synthetic", help="prefix for saving results")
 	parser.add_argument("--method", default="naive", help="method for computing hash")
+	parser.add_argument("--gap", type=int, default=50, help="gap for saving results")
 
 	args = parser.parse_args()
 	return args
@@ -125,6 +126,7 @@ if __name__ == "__main__":
 	args = get_args()
 	prefix = args.prefix
 	method = args.method
+	gap = args.gap
 
 	# directories for saving results
 	today = datetime.now()
@@ -171,9 +173,9 @@ if __name__ == "__main__":
 	with h5py.File(args.data, 'r') as hdf:
 		keys = list(hdf.keys())
 		view = hdf[keys[0]][:]
-		location = hdf[keys[2]][:]
-		color = hdf[keys[3]][:]
-		light = hdf[keys[4]][:]
+		location = hdf[keys[1]][:]
+		color = hdf[keys[2]][:]
+		light = hdf[keys[3]][:]
 
 	numdir = color.shape[0]
 	ynum = color.shape[1]
@@ -192,13 +194,13 @@ if __name__ == "__main__":
 
 	# xy = torch.stack((yv.flatten(), xv.flatten())).t()
 
-	
-	# for i in range(0, numdir, 50):
-	# 	curcolor = color[i].reshape(ynum, xnum, n_channels)
-	# 	print("i", i, curcolor.shape)
-	# 	curcolor = mi.Bitmap(curcolor).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
-	# 	filename = image_dir + 'color_' +str(i)+ '_' + method + '_gt.exr'
-	# 	curcolor.write(filename)
+	for i in range(0, numdir, gap):
+		curcolor = color[i].reshape(ynum, xnum, n_channels)
+		print("i", i, curcolor.shape)
+		curcolor = mi.Bitmap(curcolor).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
+		filename = image_dir + 'color_' +str(i)+ '_' + method + '_gt.exr'
+		curcolor.write(filename)
+
 
 	prev_time = time.perf_counter()
 
@@ -282,7 +284,7 @@ if __name__ == "__main__":
 	light = light.reshape(numdir, ynum, xnum, dir_dim)
 	view = view.reshape(numdir, ynum, xnum, dir_dim)
 	with torch.no_grad():
-		for index in range(0, numdir, 50):
+		for index in range(0, numdir, gap):
 			curlocation = location[index].reshape(-1, 2)
 			curlight = light[index].reshape(-1, dir_dim)
 			curview = view[index].reshape(-1, dir_dim)
