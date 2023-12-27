@@ -159,7 +159,8 @@ if __name__ == "__main__":
 
 	for i in range(args.n_steps):
 		batch = torch.rand([batch_size, 2], device=device, dtype=torch.float32)
-		targets = traced_image(batch)
+		# targets = traced_image(batch)
+		targets = image(batch)
 		output = model(batch)
 
 		relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
