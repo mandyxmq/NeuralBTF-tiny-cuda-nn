@@ -207,6 +207,7 @@ def invertVNDF_simple(wi, wm, alphax, alphay):
     wmstd = wmstd / dr.norm(wmstd)
 
     c = (2.0 * dr.dot(wistd, wmstd) * wmstd - wistd)
+    c = dr.normalize(c)
     phi = dr.atan2(c.y, c.x)
     u1 = (phi / dr.pi) * 0.5 + 0.5
     u2 = (1.0 - c.z) / (1.0 + wistd.z)
@@ -274,7 +275,7 @@ if __name__ == '__main__':
 
     # save data
     folder = 'real_' + data
-    new_file_path = '../BTFdata/'+folder+'_samedirection'+'_'+mode+'.hdf5'
+    new_file_path = '../BTFdata/'+folder+'_samedirection' + mode + '.hdf5'
     dataset_dtype = np.float32
 
     # Dataset names
@@ -359,7 +360,7 @@ if __name__ == '__main__':
     u2 = u2.numpy()
     view = np.stack((u1.reshape((numdir, ynum_final, xnum_final)), u2.reshape((numdir, ynum_final, xnum_final))), axis=-1)  
 
-    new_file_path = '../BTFdata/'+folder+'_reparam_simple_samedirection'+'_'+mode+'.hdf5'
+    new_file_path = '../BTFdata/'+folder+'_reparam_simple_samedirection' + mode + '.hdf5'
     print("view.shape", view.shape)
     print("location.shape", location.shape)
     print("color.shape", color.shape)

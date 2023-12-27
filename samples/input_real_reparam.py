@@ -189,6 +189,7 @@ def invertVNDF(wi, wm, m_mu_x, m_mu_y, m_alpha_u, m_alpha_v, m_phi):
     m_trans = dr.normalize(m_trans)
 
     c = (2.0 * dr.dot(wi_trans, m_trans) * m_trans - wi_trans)
+    c = dr.normalize(c)
     phi = dr.atan2(c.y, c.x)
     u1 = (phi / dr.pi) * 0.5 + 0.5
     u2 = (1.0 - c.z) / (1.0 + wi_trans.z)
