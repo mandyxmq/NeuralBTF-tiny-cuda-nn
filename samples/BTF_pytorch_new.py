@@ -36,10 +36,10 @@ import torch
 import time
 import h5py
 from datetime import datetime
-import mitsuba as mi
 import matplotlib.pyplot as plt
 import random
-from scipy.interpolate import RegularGridInterpolator
+from torch.utils.data import Dataset
+import mitsuba as mi
 
 mi.set_variant('cuda_ad_rgb')
 
@@ -61,6 +61,21 @@ from common import read_image, write_image, ROOT_DIR
 
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
+
+
+class BTFdataset(Dataset):
+    def __init__(self, input, output):
+        super().__init__()
+        self.input = input
+        self.output = output
+
+    def __len__(self):
+        return self.input.shape[0]
+
+    def __getitem__(self, idx): 
+
+        return self.input[idx], self.output[idx]
+    
 
 def yuv_to_rgb(x):
 
@@ -127,6 +142,38 @@ def query_image(image, xs):
 			image[y1, x0] * (1.0 - lerp_weights[:,0:1]) * lerp_weights[:,1:2] +
 			image[y1, x1] * lerp_weights[:,0:1] * lerp_weights[:,1:2]
 		)
+	
+
+def query_images(images, xs):
+	num_img = images.shape[0]
+	shape = images.shape[1:3]
+	n_pixels = shape[0] * shape[1]
+	result = torch.zeros([xs.shape[0], 3], device=xs.device, dtype=torch.float32)
+
+	with torch.no_grad():
+		xs = xs * torch.tensor([shape[1], shape[0]], device=xs.device).float()
+
+		for i in range(num_img):
+			image = images[i]
+			# Bilinearly filtered lookup from the image. Not super fast,
+			# but less than ~20% of the overall runtime of this example.			
+
+			indices = xs[i*n_pixels:(i+1)*n_pixels].long()
+			lerp_weights = xs[i*n_pixels:(i+1)*n_pixels] - indices.float()
+
+			x0 = indices[:, 0].clamp(min=0, max=shape[1]-1)
+			y0 = indices[:, 1].clamp(min=0, max=shape[0]-1)
+			x1 = (x0 + 1).clamp(max=shape[1]-1)
+			y1 = (y0 + 1).clamp(max=shape[0]-1)
+
+			result[i*n_pixels:(i+1)*n_pixels, :] = (
+				image[y0, x0] * (1.0 - lerp_weights[:,0:1]) * (1.0 - lerp_weights[:,1:2]) +
+				image[y0, x1] * lerp_weights[:,0:1] * (1.0 - lerp_weights[:,1:2]) +
+				image[y1, x0] * (1.0 - lerp_weights[:,0:1]) * lerp_weights[:,1:2] +
+				image[y1, x1] * lerp_weights[:,0:1] * lerp_weights[:,1:2]
+			)
+
+	return result
 		
 def nolow(x):
 	x = x.clamp(-0.1)
@@ -139,7 +186,7 @@ def get_args():
 	parser.add_argument("--test_data", default="BTFdata/real_sari_01_factor3.hdf5", help="data to test")
 	parser.add_argument("--config", default="data/config_hash_naive.json", help="JSON config for tiny-cuda-nn")
 	parser.add_argument("--n_steps", type=int, default=20000, help="Number of training steps")
-	parser.add_argument("--batch_size", type=int, default=240000, help="power of 2 batch size") # 10 is good, 19 diverges
+	parser.add_argument("--batch_size", type=int, default=4, help="power of 2 batch size") # 10 is good, 19 diverges
 	parser.add_argument("--interval", type=int, default=100, help="interval for printing and saving results")
 	parser.add_argument("--prefix", default="sari_01", help="prefix for saving results")
 	parser.add_argument("--method", default="naive", help="method for computing hash")
@@ -173,6 +220,9 @@ if __name__ == "__main__":
 	gt = args.gt
 	workers = 8
 
+	yrange = 400
+	xrange = 600
+	
 	# directories for saving results
 	today = datetime.now()
 	todaystr = today.strftime('%Y%m%d')
@@ -218,10 +268,12 @@ if __name__ == "__main__":
 	with h5py.File(args.data, 'r') as hdf:
 		keys = list(hdf.keys())
 		view = hdf[keys[0]][:]
-		location = hdf[keys[1]][:]
 		color = hdf[keys[2]][:]
 		light = hdf[keys[3]][:]
 
+	view = view[:, 0:yrange, 0:xrange, :]
+	color = color[:, 0:yrange, 0:xrange, :]
+	light = light[:, 0:yrange, 0:xrange, :]
 
 	numdir = color.shape[0]
 	resolution = color.shape[1:3]
@@ -252,83 +304,77 @@ if __name__ == "__main__":
 	prev_time = time.perf_counter()
 
 	batch_size = args.batch_size
+	batch_ele = batch_size * n_pixels
 
 	interval = args.interval
 
 	print(f"Beginning optimization with {args.n_steps} training steps.")
 
-	location = location.reshape(-1, 2)
-	light = light.reshape(-1, 2)
-	view = view.reshape(-1, 2)
-
-	input = np.concatenate((location, light, view), axis=-1)
+	input = np.concatenate((light, view), axis=-1)
 	input = torch.tensor(input, device=device, dtype=torch.float32)
 	print("input", input.shape)
-
 	color = torch.tensor(color, device=device, dtype=torch.float32)
-	#color = torch.tensor(color.reshape(-1, n_channels), device=device, dtype=torch.float32)
 
 	total_num = input.shape[0]
 
 
-	dataset = dataset.dataset_reader.DatasetMulti(self.args.dataset)
-
-
-	dataloader = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, \
-											num_workers=workers, drop_last=True, \
-											)
+	dataset = BTFdataset(input, color)
+	dataloader = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, drop_last=True)
 
 
 	losses = []
-	for i in range(args.n_steps):
-		# batch = torch.rand(batch_size, device=device, dtype=torch.float32)
-		# batch_index = torch.floor(batch * total_num).int()
-		# targets = color[batch_index, :]
-		# output = model(input[batch_index, :])
+	iter = 0
+	go = True
+	while go:
+		
+		for (input_data, output_data) in dataloader:
 
-		# decide which image to learn
-		random_index = random.randint(0, numdir-1)
+			batch = torch.rand([batch_ele, 2], device=device, dtype=torch.float32)
+			curinput = torch.cat((batch, input_data.reshape(-1, 4)), dim=-1)
+			output = model(curinput)
 
-		batch = torch.rand([batch_size, 2], device=device, dtype=torch.float32)
-		targets = query_image(color[random_index], batch)
-		curinput = input[random_index*batch_size:(random_index+1)*batch_size, :]
-		curinput[:, 0:2] = batch
-		output = model(curinput)
+			targets = query_images(output_data, batch)
 
-		l2_error = (output - targets.to(output.dtype))**2
-		loss = l2_error.mean()
+			# l2_error = (output - targets.to(output.dtype))**2
+			# loss = l2_error.mean()
 
-		# relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
-		# loss = relative_l2_error.mean()
+			relative_l2_error = (output - nolow(targets).to(output.dtype))**2 / (output.detach()**2 + 0.01)
+			loss = relative_l2_error.mean()
 
-		losses.append(loss.item())
+			losses.append(loss.item())
 
-		optimizer.zero_grad()
-		loss.backward()
-		optimizer.step()
+			optimizer.zero_grad()
+			loss.backward()
+			optimizer.step()
 
-		if i % interval == 0:
-			loss_val = loss.item()
-			torch.cuda.synchronize()
-			elapsed_time = time.perf_counter() - prev_time
-			print(f"Step#{i}: loss={loss_val} time={int(elapsed_time*1000000)}[µs]")
+			if iter % interval == 0:
+				loss_val = loss.item()
+				torch.cuda.synchronize()
+				elapsed_time = time.perf_counter() - prev_time
+				print(f"Step#{iter}: loss={loss_val} time={int(elapsed_time*1000000)}[µs]")
 
-			filename = result_dir + prefix + '_'+method
-			curloss = np.array(losses)
+				filename = result_dir + prefix + '_'+method
+				curloss = np.array(losses)
 
-			np.save(filename + '_loss.npy', curloss)
-			plt.plot(curloss)
-			plt.yscale('log')
-			plt.xlabel('steps')
-			plt.title('loss, step ' + str(i))
-			plt.savefig(filename+'_loss_lr'+str(lr)+'.png')
-			plt.close()
+				np.save(filename + '_loss.npy', curloss)
+				plt.plot(curloss)
+				plt.yscale('log')
+				plt.xlabel('steps')
+				plt.title('loss, step ' + str(iter))
+				plt.savefig(filename+'_loss_lr'+str(lr)+'.png')
+				plt.close()
 
-			# Ignore the time spent saving the image
-			prev_time = time.perf_counter()
+				# Ignore the time spent saving the image
+				prev_time = time.perf_counter()
 
-			if i > 0 and interval < 1000:
-				interval *= 10
+				if iter > 0 and interval < 1000:
+					interval *= 10
+
+			iter += 1
+
+			if iter >= args.n_steps:
+				go = False
+				break
 
 
 	# save model
@@ -336,7 +382,6 @@ if __name__ == "__main__":
 	torch.save(model, filename)
 
 
-	location = location.reshape(numdir, resolution[0], resolution[1], 2)
 	light = light.reshape(numdir, resolution[0], resolution[1], dir_dim)
 	view = view.reshape(numdir, resolution[0], resolution[1], dir_dim)
 	with torch.no_grad():
@@ -347,6 +392,7 @@ if __name__ == "__main__":
 			curinput = np.concatenate((curlocation, curlight, curview), axis=-1)
 			curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
 			curoutput = model(curinput)
+			curoutput = torch.exp(curoutput) - 1
 
 			curoutput = curoutput.reshape(img_shape).clamp(0.0).detach().cpu().numpy()
 
