@@ -13,6 +13,65 @@ import matplotlib.pyplot as plt
 mi.set_variant('cuda_ad_rgb')
 
 
+def save_gt(data):
+    with h5py.File(data, 'r') as hdf:
+        keys = list(hdf.keys())
+        view = hdf[keys[0]][:]
+        location = hdf[keys[1]][:]
+        color = hdf[keys[2]][:]
+        light = hdf[keys[3]][:]
+
+    numdir = color.shape[0]
+    ynum = color.shape[1]
+    xnum = color.shape[2]
+    with torch.no_grad():
+        # for index in range(0, numdir, gap):
+        for index in range(0, 10):
+            curcolor = color[index]
+            curcolor = mi.Bitmap(curcolor).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
+            filename = savedir + 'color_' +str(index)+ '_gt.exr'
+            curcolor.write(filename)
+
+def evaluate(data, model, method, savedir, reparam=False, jacobian_file='leather_04_jacobian.npy'):
+    with h5py.File(data, 'r') as hdf:
+        keys = list(hdf.keys())
+        view = hdf[keys[0]][:]
+        location = hdf[keys[1]][:]
+        color = hdf[keys[2]][:]
+        light = hdf[keys[3]][:]
+
+    if reparam:
+        jacobian = np.load('../BTFdata/'+jacobian_file)
+
+    numdir = color.shape[0]
+    ynum = color.shape[1]
+    xnum = color.shape[2]
+
+    # evaluation
+    with torch.no_grad():
+        #for index in range(0, numdir, gap):
+        for index in range(0, 10):
+            curlocation = location[index].reshape(-1, 2)
+            curlight = light[index].reshape(-1, dir_dim)
+            curview = view[index].reshape(-1, dir_dim)
+            curinput = np.concatenate((curlocation, curlight, curview), axis=-1)
+            curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
+            curoutput = model(curinput)
+            curoutput = yuv_to_rgb(curoutput)
+            curoutput = torch.exp(curoutput) - 1
+
+            curoutput = curoutput.reshape(ynum, xnum, n_channels).clamp(0.0).detach().cpu().numpy()
+            if reparam:
+                curoutput = curoutput / jacobian[index][:,:,None]
+            curoutput = np.nan_to_num(curoutput)
+            curoutput = mi.Bitmap(curoutput).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
+            filename = savedir + 'color_' +str(index)+ '_' + method + '_pred'
+            if reparam:
+                filename += '_reparam'
+            filename = filename + '.exr'
+            curoutput.write(filename)
+
+
 def yuv_to_rgb(x):
 
 	x_r = x[:,0] + 1.13983*x[:,2]
@@ -60,39 +119,26 @@ if __name__ == "__main__":
     print("savedir: ", savedir)
     if not os.path.exists(savedir):
         os.makedirs(savedir)
-        
-    #filename = '20231227/leather_real/naive_dense_samedirection/result/leather_real_naive_dense_samedirection.pth'
-    filename = '20231227/sari_real_retro/naive_dense_samedirection/result/sari_real_retro_naive_dense_samedirection.pth'
+
+    # load naive model
+    filename = '../20240102/leather_04_real_factor3/naive_hash/result/leather_04_real_factor3_naive_hash.pth'
     model = torch.load(filename).to(device)
 
-    # load gt data
-    #data = 'BTFdata/real_leather_04_samedirection_retro.hdf5'
-    data = 'BTFdata/real_sari_01_samedirection.hdf5'
-    with h5py.File(data, 'r') as hdf:
-        keys = list(hdf.keys())
-        view = hdf[keys[0]][:]
-        location = hdf[keys[1]][:]
-        color = hdf[keys[2]][:]
-        light = hdf[keys[3]][:]
+    data = '../BTFdata/real_leather_04_factor3_retro.hdf5'
 
-    numdir = color.shape[0]
-    ynum = color.shape[1]
-    xnum = color.shape[2]
+    # save gt retro data
+    save_gt(data)
 
-    # evaluation
-    with torch.no_grad():
-        for index in range(0, numdir, gap):
-            curlocation = location[index].reshape(-1, 2)
-            curlight = light[index].reshape(-1, dir_dim)
-            curview = view[index].reshape(-1, dir_dim)
-            curinput = np.concatenate((curlocation, curlight, curview), axis=-1)
-            curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
-            curoutput = model(curinput)
+    # eval naive on retro data
+    evaluate(data, model, method, savedir)
 
-            curoutput = yuv_to_rgb(curoutput)
-            curoutput = torch.exp(curoutput) - 1
+    # load reparam
+    filename = '../20240102/leather_04_real_factor3/reparam_hash/result/leather_04_real_factor3_reparam_hash.pth'
+    model = torch.load(filename).to(device)
 
-            curoutput = curoutput.reshape(ynum, xnum, n_channels).clamp(0.0).detach().cpu().numpy()
-            curoutput = mi.Bitmap(curoutput).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
-            filename = savedir + 'color_' +str(index)+ '_' + method + '_pred.exr'
-            curoutput.write(filename)
+    # eval reparam on retro data
+    data = '../BTFdata/real_leather_04_reparam_simple_factor3_retro.hdf5'
+    reparam = True
+    jacobian_file='leather_04_jacobian.npy'
+    evaluate(data, model, method, savedir, reparam, jacobian_file)
+    

@@ -27,10 +27,9 @@ def downsample(img, factor):
     return newimg
 
 
-def read_retro(jsondir, retrodir, factor, xstart, ystart, xnum, ynum):    
-    dataset_fname = f'{jsondir}/dataset.json'
+def read_retro(fulldir, factor, xstart, ystart, xnum, ynum):    
+    dataset_fname = f'{fulldir}/dataset.json'
     print(f'Loading dataset JSON file "{dataset_fname}" ..')
-    print("retrodir", retrodir)
 
     with open(dataset_fname, 'r') as f:
         dataset = ujson.load(f)
@@ -53,7 +52,7 @@ def read_retro(jsondir, retrodir, factor, xstart, ystart, xnum, ynum):
         if filter is not None and filter not in item['fname']:
             continue
 
-        fname = f'{retrodir}/r_{item["fname"]}'             
+        fname = f'{fulldir}/r_{item["fname"]}'             
 
         if not os.path.exists(fname):
             continue
@@ -62,7 +61,7 @@ def read_retro(jsondir, retrodir, factor, xstart, ystart, xnum, ynum):
             continue
 
         index += 1
-        if index % 16 !=0:   # only takes 1/9 of the data
+        if index % 16 !=0:   # only takes 1/16 of the data
             continue
         
 
@@ -124,9 +123,9 @@ if __name__ == '__main__':
     parser.add_argument('--data', default='leather_04', type=str,
                         help="data name, \
                         default is leather_04")
-    parser.add_argument('--factor', default=3, type=int,
+    parser.add_argument('--factor', default=2, type=int,
                         help="downsample factor, \
-                        default is 3")
+                        default is 2")
     parser.add_argument('--xstart', default=1100, type=int,
                         help="xstart, \
                         default is 1100")
@@ -166,12 +165,12 @@ if __name__ == '__main__':
 
     # read json file, images and downsample
     rootdir = '/home/xia/Github/BTF/data/'
-    jsondir = rootdir + data
-    retrodir = rootdir + data + '_rectified/retro'
+    fulldir = rootdir + data + '_rectified/full'
+    print("fulldir", fulldir)
 
     numdir, xi, yi, zi, xo, yo, zo, \
     thetais, phiis, thetaos, phios, imgall, cam_mat\
-    = read_retro(jsondir, retrodir, factor, xstart, ystart, xnum, ynum)
+    = read_retro(fulldir, factor, xstart, ystart, xnum, ynum)
     imgall = np.array(imgall)
     print("imgall.shape", imgall.shape)
 

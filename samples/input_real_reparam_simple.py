@@ -233,9 +233,9 @@ if __name__ == '__main__':
     parser.add_argument('--data', default='leather_04', type=str,
                         help="data name, \
                         default is leather_04")
-    parser.add_argument('--factor', default=3, type=int,
+    parser.add_argument('--factor', default=2, type=int,
                         help="downsample factor, \
-                        default is 3")
+                        default is 2")
     parser.add_argument('--xstart', default=1100, type=int,
                         help="xstart, \
                         default is 1100")
@@ -324,13 +324,13 @@ if __name__ == '__main__':
     # reparam using standard GGX
     roughnessx_filename = mapdir+"roughnessx.exr"
     roughnessx_bmp = mi.Bitmap(roughnessx_filename)
-    alphax = np.array(roughnessx_bmp)[:,:,0:1]
+    alphax = np.array(roughnessx_bmp)[:ynum,:xnum,0:1]
     alphax = downsample(alphax, factor)
     alphax = mi.Float(alphax.flatten()) 
 
     roughnessy_filename = mapdir+"roughnessy.exr"
     roughnessy_bmp = mi.Bitmap(roughnessy_filename)
-    alphay = np.array(roughnessy_bmp)[:,:,0:1]
+    alphay = np.array(roughnessy_bmp)[:ynum,:xnum,0:1]
     alphay = downsample(alphay, factor)
     alphay = mi.Float(alphay.flatten())
 

@@ -240,9 +240,9 @@ if __name__ == '__main__':
     parser.add_argument('--data', default='leather_04', type=str,
                         help="data name, \
                         default is leather_04")
-    parser.add_argument('--factor', default=3, type=int,
+    parser.add_argument('--factor', default=2, type=int,
                         help="downsample factor, \
-                        default is 3")
+                        default is 2")
     parser.add_argument('--xstart', default=1100, type=int,
                         help="xstart, \
                         default is 1100")

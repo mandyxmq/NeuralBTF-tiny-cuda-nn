@@ -8,13 +8,13 @@ mode = '_retro'
 
 
 # retro data generation
-for i in range(0, len(data_list)):
-# for i in range(1, 2):
+#for i in range(0, len(data_list)):
+for i in range(0, 1):
     data = data_list[i]
     xstart = xstart_list[i]
     xnum = xnum_list[i]
-    # command = f"python input_real_retro.py --data " + data + " --xstart " + str(xstart) + " --xnum " + str(xnum)
-    # print(command)
-    # os.system(command)
-    command = f"python input_real_reparam_simple.py --data " + data + " --xstart " + str(xstart) + " --xnum " + str(xnum) 
+    command = f"python input_real.py --data " + data + " --xstart " + str(xstart) + ' --xnum ' + str(xnum)
+    print(command)
     os.system(command)
+    # command = f"python input_real_reparam_simple.py --data " + data + " --xstart " + str(xstart) + ' --xnum ' + str(xnum)
+    # os.system(command)

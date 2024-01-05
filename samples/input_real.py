@@ -25,8 +25,8 @@ def downsample(img, factor):
     newimg = newimg.reshape(new_rows, new_cols, channels)
     return newimg
 
-def readfull(jsondir, fulldir, factor, xstart, ystart, xnum, ynum):    
-    dataset_fname = f'{jsondir}/dataset.json'
+def readfull(fulldir, factor, xstart, ystart, xnum, ynum):    
+    dataset_fname = f'{fulldir}/dataset.json'
     print(f'Loading dataset JSON file "{dataset_fname}" ..')
     print("fulldir", fulldir)
 
@@ -207,9 +207,9 @@ if __name__ == '__main__':
     parser.add_argument('--data', default='leather_04', type=str,
                         help="data name, \
                         default is leather_04")
-    parser.add_argument('--factor', default=3, type=int,
+    parser.add_argument('--factor', default=2, type=int,
                         help="downsample factor, \
-                        default is 3")
+                        default is 2")
     parser.add_argument('--xstart', default=1100, type=int,
                         help="xstart, \
                         default is 1100")
@@ -243,14 +243,13 @@ if __name__ == '__main__':
 
     # read json file, images and downsample
     rootdir = '/home/xia/Github/BTF/data/'
-    jsondir = rootdir + data
     fulldir = rootdir + data + '_rectified/full'
 
-    numdir, xi, yi, zi, xo, yo, zo, \
-    thetais, phiis, thetaos, phios, imgall, cam_mat\
-    = readfull(jsondir, fulldir, factor, xstart, ystart, xnum, ynum)
-    imgall = np.array(imgall)
-    print("imgall.shape", imgall.shape)
+    # numdir, xi, yi, zi, xo, yo, zo, \
+    # thetais, phiis, thetaos, phios, imgall, cam_mat\
+    # = readfull(fulldir, factor, xstart, ystart, xnum, ynum)
+    # imgall = np.array(imgall)
+    # print("imgall.shape", imgall.shape)
 
     # position data
     xunit = 1 / xnum_final
@@ -259,6 +258,10 @@ if __name__ == '__main__':
     xvec = np.linspace(xunit/2, 1-xunit/2, xnum_final)
     yvec = np.linspace(yunit/2, 1-yunit/2, ynum_final)
     xx, yy = np.meshgrid(xvec, yvec)
+
+    print("xx", xx)
+    print("yy", yy)
+    exit()
     xx = xx.reshape(-1)
     yy = yy.reshape(-1)
 
