@@ -427,16 +427,25 @@ if __name__ == "__main__":
 			curinput = torch.cat((batch, input_data.reshape(-1, 4)), dim=-1)
 			output = model(curinput)
 
-			# log
+			# log + relative
 			if args.loss == 0:
+				#curjacobian = query_jacobian(jacobian_data, batch)
+				curjacobian = jacobian_data.reshape(-1, 1)
+				targets = query_images(output_data, batch)
+				targets = nolow(targets * curjacobian).to(output.dtype)
+				relative_l2_error = (output - targets)**2 / (output.detach()**2 + 0.01)
+				loss = relative_l2_error.mean()
 
+			# log
+			elif args.loss == 1:
 				curjacobian = query_jacobian(jacobian_data, batch)
-				targets = nolow(query_images(output_data, batch) * curjacobian)
+				targets = query_images(output_data, batch) * curjacobian
+				targets = nolow(targets)
 				l2_error = (output - targets.to(output.dtype))**2
 				loss = l2_error.mean()
 
 			# pure l2 loss
-			elif args.loss == 1:
+			elif args.loss == 2:
 				
 				curjacobian = query_jacobian(jacobian_data, batch)
 				targets = query_images(output_data, batch) * curjacobian
@@ -486,20 +495,20 @@ if __name__ == "__main__":
 				with torch.no_grad():
 					output = model(test_input)
 
-					if args.loss == 0:
-						# log
-						output = torch.exp(output) - 1
-						output = output / test_jacobian
-						output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
-						output = nolow(output)
-						l2_error = (output - nolow(test_color.to(output.dtype)))**2
-						loss = l2_error.mean()
-					else:
-						# pure l2 loss
-						output = output / test_jacobian
-						output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
-						l2_error = (output - test_color.to(output.dtype))**2
-						loss = l2_error.mean()
+					# if args.loss == 0:
+					# 	# log
+					# 	output = torch.exp(output) - 1
+					# 	output = output / test_jacobian
+					# 	output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+					# 	output = nolow(output)
+					# 	l2_error = (output - nolow(test_color.to(output.dtype)))**2
+					# 	loss = l2_error.mean()
+					# else:
+					# 	# pure l2 loss
+					output = output / test_jacobian
+					output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+					l2_error = (output - test_color.to(output.dtype))**2
+					loss = l2_error.mean()
 
 
 					# # print("loss", loss.item())
@@ -560,7 +569,7 @@ if __name__ == "__main__":
 			curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
 			curoutput = model(curinput)
 
-			if args.loss == 0:
+			if args.loss == 0 or args.loss == 1:
 				curoutput = torch.exp(curoutput) - 1
 
 			curoutput = curoutput / jacobian[index].reshape(-1, 1)
@@ -580,7 +589,7 @@ if __name__ == "__main__":
 			curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
 			curoutput = model(curinput)
 
-			if args.loss == 0:
+			if args.loss == 0 or args.loss == 1:
 				curoutput = torch.exp(curoutput) - 1
 
 			curoutput = curoutput / test_jacobian[index].reshape(-1, 1)

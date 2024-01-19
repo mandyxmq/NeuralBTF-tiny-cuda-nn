@@ -28,7 +28,8 @@ def downsample(img, factor):
 
 def readfull(fulldir, factor, xstart, ystart, xnum, ynum, filter): 
 
-    dataset_fname = f'{fulldir}/dataset_rect.json'
+    #dataset_fname = f'{fulldir}/dataset_rect.json'
+    dataset_fname = f'{fulldir}/dataset.json'
     print(f'Loading dataset JSON file "{dataset_fname}" ..')
     print("fulldir", fulldir)
 
@@ -42,7 +43,6 @@ def readfull(fulldir, factor, xstart, ystart, xnum, ynum, filter):
     phii_degree = []
     thetao_degree = []
     phio_degree = []
-    M3_all = []
 
     angle_limit = 75
 
@@ -65,14 +65,15 @@ def readfull(fulldir, factor, xstart, ystart, xnum, ynum, filter):
         thetao_degree += [item['theta_o_measured']]
         phio_degree += [item['phi_o_measured']]
 
-        M3_all += [item['M3']]
-
         img = np.array(mi.Bitmap(fname),dtype = np.float32)
         # select the desired region
         img = img[ystart:(ystart+ynum), xstart:(xstart+xnum), :]
         # downsample
         img = downsample(img, factor)
         imgall.append(img)
+
+        del img
+        gc.collect()
 
         # if numdir == 700:
         #     print("fname", fname)
@@ -96,7 +97,7 @@ def readfull(fulldir, factor, xstart, ystart, xnum, ynum, filter):
 
     del thetai_degree, phii_degree, thetao_degree, phio_degree, thetais, phiis, thetaos, phios
 
-    return  numdir, xi, yi, zi, xo, yo, zo, imgall, cam_mat, M3_all
+    return  numdir, xi, yi, zi, xo, yo, zo, imgall, cam_mat
 
 
 if __name__ == '__main__':
@@ -164,7 +165,7 @@ if __name__ == '__main__':
     fulldir = rootdir + data + '_rectified/' + name
 
     numdir, xi, yi, zi, xo, yo, zo, \
-    imgall, cam_mat, M3_all \
+    imgall, cam_mat \
     = readfull(fulldir, factor, xstart, ystart, xnum, ynum, name)
     imgall = np.array(imgall).astype(np.float32)
     print("imgall.shape", imgall.shape)
@@ -188,10 +189,14 @@ if __name__ == '__main__':
     light = light.reshape((numdir, ynum_final, xnum_final, 3)).astype(np.float32)
     print("light.shape", light.shape)    
 
+    del xi, yi, zi, xx, yy
+
     direction = np.stack((xo, yo, zo), axis=-1)
     direction = np.repeat(direction[:, np.newaxis], finalnum, axis=1)
     direction = direction.reshape((numdir, ynum_final, xnum_final, 3)).astype(np.float32)    
     print("direction.shape", direction.shape)
+
+    del xo, yo, zo
 
     if same == 1:
 
@@ -203,6 +208,8 @@ if __name__ == '__main__':
         view = np.fromfile(fulldir + '/view.binary', dtype="float32")
         view = view.reshape((2, numdir * numpoints)).transpose()
         view = view.reshape((numdir, ynum_final, xnum_final, 2))
+
+    del direction
 
     # save data
     folder = 'real_' + data
