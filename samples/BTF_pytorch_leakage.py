@@ -199,8 +199,8 @@ def get_args():
 	parser.add_argument("--yrange", type=int, default=100, help="yrange")
 	parser.add_argument("--val_gap", type=int, default=50, help="gap for validation")
 	parser.add_argument("--numlayer", type=int, default=4, help="number of layers")
-	parser.add_argument("--loss", type=int, default=1, help="training loss, 0 is log, 1 is pure l2, 2 is relative l2")
-	parser.add_argument("--train_len", type=int, default=2000, help="training length")
+	parser.add_argument("--log", type=int, default=1, help="use log in loss function")
+
 
 	args = parser.parse_args()
 	return args
@@ -236,7 +236,6 @@ if __name__ == "__main__":
 	val_gap = args.val_gap
 	numlayer = args.numlayer
 	data2 = args.data2
-	train_len = args.train_len
 
 	# directories for saving results
 	today = datetime.now()
@@ -292,7 +291,6 @@ if __name__ == "__main__":
 	light = light[:, 0:yrange, 0:xrange, :]
 	jacobian_np = jacobian_np[:, 0:yrange, 0:xrange, :]
 
-
 	# extra training data
 	if data2 != "":
 		with h5py.File(args.data2, 'r') as hdf:
@@ -313,21 +311,9 @@ if __name__ == "__main__":
 		light = np.concatenate((light, light2), axis=0)
 		jacobian_np = np.concatenate((jacobian_np, jacobian_np2), axis=0)
 
-
-	# take train_len data
-	view = view[0:train_len]
-	color = color[0:train_len]
-	light = light[0:train_len]
-	jacobian_np = jacobian_np[0:train_len]
-
 	numdir = color.shape[0]
 	resolution = color.shape[1:3]
 	n_pixels = resolution[0] * resolution[1]
-
-	print("numdir", numdir)
-	print("resolution", resolution)
-	print("n_pixels", n_pixels)
-
 
 	# read in test data
 	with h5py.File(args.test_data, 'r') as hdf:
@@ -405,6 +391,10 @@ if __name__ == "__main__":
 	test_input = torch.tensor(test_input, device=device, dtype=torch.float32)
 	print("test_input", test_input.shape)
 
+	# # check if there is any nans in test_input
+	# print("test_input nan", torch.isnan(test_input).any())
+	# exit()
+
 	test_color = torch.tensor(test_color.reshape(-1, 3), device=device, dtype=torch.float32)
 	test_jacobian = torch.tensor(test_jacobian.reshape(-1, 1), device=device, dtype=torch.float32)
 
@@ -427,28 +417,31 @@ if __name__ == "__main__":
 			curinput = torch.cat((batch, input_data.reshape(-1, 4)), dim=-1)
 			output = model(curinput)
 
-			# log
-			if args.loss == 0:
-
-				curjacobian = query_jacobian(jacobian_data, batch)
-				targets = nolow(query_images(output_data, batch) * curjacobian)
-				l2_error = (output - targets.to(output.dtype))**2
+			if args.log:
+				# log
+				targets = nolow(query_images(output_data, batch))
+				l2_error = (output - nolow(1))**2
 				loss = l2_error.mean()
-
-			# pure l2 loss
-			elif args.loss == 1:
-				
-				curjacobian = query_jacobian(jacobian_data, batch)
-				targets = query_images(output_data, batch) * curjacobian
-				l2_error = (output - targets.to(output.dtype))**2
+			else:				
+				# no log
+				targets = query_images(output_data, batch).to(output.dtype)
+				l2_error = (output - 1)**2
 				loss = l2_error.mean()
+			
+			# # pure l2 loss
+			# curjacobian = query_jacobian(jacobian_data, batch)
+			# output = output / curjacobian
+			# #output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+			# targets = query_images(output_data, batch)
+			# l2_error = (output - targets.to(output.dtype))**2
+			# loss = l2_error.mean()
 
-			# relative l2 loss, no log
-			else:
-				curjacobian = query_jacobian(jacobian_data, batch)
-				targets = query_images(output_data, batch) * curjacobian
-				relative_l2_error = (output - targets)**2 / (output.detach()**2 + 0.01)
-				loss = relative_l2_error.mean()
+			# # relative l2 loss, no log
+			# curjacobian = query_jacobian(jacobian_data, batch)
+			# output = output / curjacobian
+			# targets = query_images(output_data, batch)
+			# relative_l2_error = (output - targets)**2 / (output.detach()**2 + 0.01)
+			# loss = relative_l2_error.mean()
 
 			losses.append(loss.item())
 
@@ -486,37 +479,22 @@ if __name__ == "__main__":
 				with torch.no_grad():
 					output = model(test_input)
 
-					if args.loss == 0:
-						# log
+					if args.log:
+						curtestcolor = test_color.to(output.dtype)
+
 						output = torch.exp(output) - 1
-						output = output / test_jacobian
-						output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+						output = output * curtestcolor.reshape(-1, n_channels)
 						output = nolow(output)
-						l2_error = (output - nolow(test_color.to(output.dtype)))**2
+
+						curtestcolor = nolow(curtestcolor)
+						l2_error = (output - curtestcolor)**2
 						loss = l2_error.mean()
+
+
 					else:
-						# pure l2 loss
-						output = output / test_jacobian
-						output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
-						l2_error = (output - test_color.to(output.dtype))**2
+						curtestcolor = test_color.to(output.dtype)
+						l2_error = (output*curtestcolor - curtestcolor)**2
 						loss = l2_error.mean()
-
-
-					# # print("loss", loss.item())
-					# name, param = list(model.named_parameters())[0]
-					# param = param.detach().cpu().numpy()
-					# np.save(result_dir + prefix + '_' + method + '_param_iter'+str(iter)+'.npy', param)
-
-					# # test_color = nolow(test_color.to(output.dtype))
-					# # relative_l2_error = (output - test_color)**2 / (output.detach()**2 + 0.01)
-					# # loss = relative_l2_error.mean()
-
-
-					# # pure l2 loss
-					# output = output / test_jacobian
-					# output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
-					# l2_error = (output - test_color.to(output.dtype))**2
-					# loss = l2_error.mean()
 
 					test_losses.append(loss.item())
 
@@ -550,6 +528,7 @@ if __name__ == "__main__":
 	test_light = test_light.reshape(numdir2, resolution[0], resolution[1], dir_dim)
 	test_view = test_view.reshape(numdir2, resolution[0], resolution[1], dir_dim)
 	test_jacobian = test_jacobian.reshape(numdir2, resolution[0], resolution[1], 1)
+	test_color = test_color.reshape(numdir2, resolution[0], resolution[1], n_channels)
 
 	with torch.no_grad():
 		for index in range(0, numdir, gap):
@@ -560,18 +539,19 @@ if __name__ == "__main__":
 			curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
 			curoutput = model(curinput)
 
-			if args.loss == 0:
+			if args.log:
 				curoutput = torch.exp(curoutput) - 1
 
-			curoutput = curoutput / jacobian[index].reshape(-1, 1)
-			curoutput = torch.nan_to_num(curoutput, nan=0.0, posinf=0.0, neginf=0.0)
-
-			curoutput = curoutput.reshape(img_shape).clamp(0.0).detach().cpu().numpy()
+			curcolor  = query_image(color[index], dim12)
+			curoutput = curoutput * curcolor.reshape(-1, n_channels)
+			curoutput = curoutput.reshape(img_shape).clamp(0.0).detach().cpu().numpy()			
 
 			curoutput = mi.Bitmap(curoutput).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
 			filename = image_dir + 'color_' +str(index)+ '_' + method + '_pred.exr'
 			curoutput.write(filename)
 
+
+		print("test_color.shape", test_color.shape)
 		for index in range(0, numdir2, gap2):
 			curlocation = dim12.detach().cpu().numpy()
 			curlight = test_light[index].reshape(-1, dir_dim)
@@ -580,12 +560,11 @@ if __name__ == "__main__":
 			curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
 			curoutput = model(curinput)
 
-			if args.loss == 0:
+			if args.log:
 				curoutput = torch.exp(curoutput) - 1
 
-			curoutput = curoutput / test_jacobian[index].reshape(-1, 1)
-			curoutput = torch.nan_to_num(curoutput, nan=0.0, posinf=0.0, neginf=0.0)
-
+			curcolor  = query_image(test_color[index], dim12)
+			curoutput = curoutput * curcolor.reshape(-1, n_channels)
 			curoutput = curoutput.reshape(img_shape).clamp(0.0).detach().cpu().numpy()
 
 			curoutput = mi.Bitmap(curoutput).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)

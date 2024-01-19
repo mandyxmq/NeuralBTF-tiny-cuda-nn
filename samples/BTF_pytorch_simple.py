@@ -40,6 +40,7 @@ import matplotlib.pyplot as plt
 import random
 from torch.utils.data import Dataset
 import mitsuba as mi
+import numbers
 
 mi.set_variant('cuda_ad_rgb')
 
@@ -57,26 +58,24 @@ except ImportError:
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "scripts")
 sys.path.insert(0, SCRIPTS_DIR)
 
-from common import read_image, write_image, ROOT_DIR
-
-DATA_DIR = os.path.join(ROOT_DIR, "data")
-IMAGES_DIR = os.path.join(DATA_DIR, "images")
-
 
 class BTFdataset(Dataset):
-    def __init__(self, input, output):
-        super().__init__()
-        self.input = input
-        self.output = output
+	def __init__(self, input, output, jacobian):
+		super().__init__()
+		self.input = input
+		self.output = output
+		self.jacobian = jacobian
 
-    def __len__(self):
-        return self.input.shape[0]
+	def __len__(self):
+		return self.input.shape[0]
 
-    def __getitem__(self, idx): 
+	def __getitem__(self, idx): 
 
-        return self.input[idx], self.output[idx]
-    
-
+		if len(self.jacobian.shape) == 4:
+			return self.input[idx], self.output[idx], self.jacobian[idx]
+		else:
+			return self.input[idx], self.output[idx], self.jacobian
+			
 def yuv_to_rgb(x):
 
 	x_r = x[:,0] + 1.13983*x[:,2]
@@ -87,38 +86,6 @@ def yuv_to_rgb(x):
 
 	return x
 
-class Image(torch.nn.Module):
-	def __init__(self, filename, device):
-		super(Image, self).__init__()
-		self.data = read_image(filename)
-		self.shape = self.data.shape
-		self.data = torch.from_numpy(self.data).float().to(device)
-
-		# print("shape", self.shape)
-		# print("self.data[0, 0:5]", self.data[0, 0:5])
-		# exit()
-
-	def forward(self, xs):
-		with torch.no_grad():
-			# Bilinearly filtered lookup from the image. Not super fast,
-			# but less than ~20% of the overall runtime of this example.
-			shape = self.shape		
-
-			xs = xs * torch.tensor([shape[1], shape[0]], device=xs.device).float()
-			indices = xs.long()
-			lerp_weights = xs - indices.float()
-
-			x0 = indices[:, 0].clamp(min=0, max=shape[1]-1)
-			y0 = indices[:, 1].clamp(min=0, max=shape[0]-1)
-			x1 = (x0 + 1).clamp(max=shape[1]-1)
-			y1 = (y0 + 1).clamp(max=shape[0]-1)
-
-			return (
-				self.data[y0, x0] * (1.0 - lerp_weights[:,0:1]) * (1.0 - lerp_weights[:,1:2]) +
-				self.data[y0, x1] * lerp_weights[:,0:1] * (1.0 - lerp_weights[:,1:2]) +
-				self.data[y1, x0] * (1.0 - lerp_weights[:,0:1]) * lerp_weights[:,1:2] +
-				self.data[y1, x1] * lerp_weights[:,0:1] * lerp_weights[:,1:2]
-			)
 		
 def query_image(image, xs):
 	with torch.no_grad():
@@ -183,6 +150,7 @@ def get_args():
 	parser = argparse.ArgumentParser(description="Image benchmark using PyTorch bindings.")
 
 	parser.add_argument("--data", default="BTFdata/real_sari_01_factor3.hdf5", help="data to match")
+	parser.add_argument("--data2", default="", help="retro data")
 	parser.add_argument("--test_data", default="BTFdata/real_sari_01_factor3.hdf5", help="data to test")
 	parser.add_argument("--config", default="data/config_hash_naive.json", help="JSON config for tiny-cuda-nn")
 	parser.add_argument("--n_steps", type=int, default=20000, help="Number of training steps")
@@ -191,8 +159,16 @@ def get_args():
 	parser.add_argument("--prefix", default="sari_01", help="prefix for saving results")
 	parser.add_argument("--method", default="naive", help="method for computing hash")
 	parser.add_argument("--gap", type=int, default=50, help="gap for saving results")
-	parser.add_argument("--jacobian", type=int, default=0, help="use jacobian")
+	parser.add_argument("--gap2", type=int, default=20, help="gap for saving results")
 	parser.add_argument("--gt", type=int, default=1, help="save ground truth")
+	parser.add_argument("--n_levels", type=int, default=12, help="number of levels")
+	parser.add_argument("--n_features_per_level", type=int, default=2, help="number of features per level")
+	parser.add_argument("--log2_hashmap_size", type=int, default=15, help="log2 hash map size")
+	parser.add_argument("--base_resolution", type=int, default=8, help="base resolution")
+	parser.add_argument("--xrange", type=int, default=150, help="xrange")
+	parser.add_argument("--yrange", type=int, default=100, help="yrange")
+	parser.add_argument("--val_gap", type=int, default=50, help="gap for validation")
+
 
 	args = parser.parse_args()
 	return args
@@ -216,13 +192,17 @@ if __name__ == "__main__":
 	prefix = args.prefix
 	method = args.method
 	gap = args.gap
-	use_jacobian = args.jacobian
+	gap2 = args.gap2
 	gt = args.gt
 	workers = 8
+	n_levels = args.n_levels
+	n_features_per_level = args.n_features_per_level
+	log2_hashmap_size = args.log2_hashmap_size
+	base_resolution = args.base_resolution
+	xrange = args.xrange
+	yrange = args.yrange
+	val_gap = args.val_gap
 
-	yrange = 400
-	xrange = 600
-	
 	# directories for saving results
 	today = datetime.now()
 	todaystr = today.strftime('%Y%m%d')
@@ -230,7 +210,8 @@ if __name__ == "__main__":
 	if not os.path.exists(savedir):
 		os.makedirs(savedir)
 
-	savedir = savedir + prefix + '/' + method + '/'
+	configuration = str(n_levels) + '_' + str(n_features_per_level) + '_' + str(log2_hashmap_size) + '_' + str(base_resolution)
+	savedir = savedir + prefix + '/' + configuration + '/' + method + '/'
 
 	result_dir = savedir + "result/"
 	if not os.path.exists(result_dir):
@@ -247,7 +228,6 @@ if __name__ == "__main__":
 	n_aux = 0
 	dir_dim = 2
 
-	#model = tcnn.NetworkWithInputEncoding(n_input_dims=6, n_output_dims=n_channels, encoding_config=config["encoding"], network_config=config["network"]).to(device)
 	model = tcnn.NetworkWithInputEncoding(n_input_dims = 2 + 2 * dir_dim, n_output_dims = n_channels + n_aux, encoding_config=config["encoding"], network_config=config["network"]).to(device)
 	print(model)
 
@@ -270,14 +250,33 @@ if __name__ == "__main__":
 		view = hdf[keys[0]][:]
 		color = hdf[keys[2]][:]
 		light = hdf[keys[3]][:]
+		jacobian_np = hdf[keys[4]][:]
 
 	view = view[:, 0:yrange, 0:xrange, :]
 	color = color[:, 0:yrange, 0:xrange, :]
 	light = light[:, 0:yrange, 0:xrange, :]
+	jacobian_np = jacobian_np[:, 0:yrange, 0:xrange, :]
 
 	numdir = color.shape[0]
 	resolution = color.shape[1:3]
 	n_pixels = resolution[0] * resolution[1]
+
+	# read in test data
+	with h5py.File(args.test_data, 'r') as hdf:
+		keys = list(hdf.keys())
+		test_view = hdf[keys[0]][:]
+		test_location = hdf[keys[1]][:]
+		test_color = hdf[keys[2]][:]
+		test_light = hdf[keys[3]][:]
+		test_jacobian = hdf[keys[4]][:]
+
+	test_view = test_view[:, 0:yrange, 0:xrange, :]
+	test_color = test_color[:, 0:yrange, 0:xrange, :]
+	test_light = test_light[:, 0:yrange, 0:xrange, :]
+	test_location = test_location[:, 0:yrange, 0:xrange, :]
+	test_jacobian = test_jacobian[:, 0:yrange, 0:xrange, :]
+
+	numdir2 = test_color.shape[0]	
 
 	half_dim1 =  0.5 / resolution[0]
 	half_dim2 =  0.5 / resolution[1]
@@ -286,10 +285,10 @@ if __name__ == "__main__":
 	dim1v, dim2v = torch.meshgrid([dim1, dim2])  # is different from np.meshgrid
 	dim12 = torch.stack((dim2v.flatten(), dim1v.flatten())).T
 
-
 	img_shape = (resolution[0], resolution[1], n_channels)
 
 	if gt:
+		# save training gt
 		for i in range(0, numdir, gap):
 			curcolor = color[i].reshape(img_shape)
 			print("i", i, curcolor.shape)
@@ -300,6 +299,16 @@ if __name__ == "__main__":
 			filename = image_dir + 'color_' +str(i)+ '_' + method + '_gt.exr'
 			curcolor.write(filename)
 
+		# save test gt
+		for i in range(0, numdir2, gap2):
+			curcolor = test_color[i].reshape(img_shape)
+			print("i", i, curcolor.shape)
+			curcolor = torch.tensor(curcolor, device=device, dtype=torch.float32)
+			curcolor = query_image(curcolor, dim12).detach().cpu().numpy()		
+			curcolor = np.reshape(curcolor, img_shape)
+			curcolor = mi.Bitmap(curcolor).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
+			filename = image_dir + 'color_' +str(i)+ '_' + method + '_val_gt.exr'
+			curcolor.write(filename)
 
 	prev_time = time.perf_counter()
 
@@ -315,30 +324,52 @@ if __name__ == "__main__":
 	print("input", input.shape)
 	color = torch.tensor(color, device=device, dtype=torch.float32)
 
+	jacobian = torch.tensor(jacobian_np, device=device, dtype=torch.float32)
+
 	total_num = input.shape[0]
 
+	# test data
+	test_location = test_location.reshape(-1, 2)
+	test_light = test_light.reshape(-1, 2)
+	test_view = test_view.reshape(-1, 2)
 
-	dataset = BTFdataset(input, color)
+	test_input = np.concatenate((test_location, test_light, test_view), axis=-1)
+	test_input = torch.tensor(test_input, device=device, dtype=torch.float32)
+	print("test_input", test_input.shape)
+
+	test_color = torch.tensor(test_color.reshape(-1, 3), device=device, dtype=torch.float32)
+	test_jacobian = torch.tensor(test_jacobian.reshape(-1, 1), device=device, dtype=torch.float32)
+
+
+	dataset = BTFdataset(input, color, jacobian)
 	dataloader = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, drop_last=True)
 
 
 	losses = []
+	test_losses = []
 	iter = 0
 	go = True
 	while go:
 		
-		for (input_data, output_data) in dataloader:
+		for (input_data, output_data, jacobian_data) in dataloader:
 
 			batch = torch.rand([batch_ele, 2], device=device, dtype=torch.float32)
 			curinput = torch.cat((batch, input_data.reshape(-1, 4)), dim=-1)
 			output = model(curinput)
+
+			output = torch.exp(output) - 1
+			output = output / jacobian_data.reshape(-1, 1)
+			output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+			output = nolow(output)
+
 
 			targets = query_images(output_data, batch)
 
 			# l2_error = (output - targets.to(output.dtype))**2
 			# loss = l2_error.mean()
 
-			relative_l2_error = (output - nolow(targets).to(output.dtype))**2 / (output.detach()**2 + 0.01)
+			targets = nolow(targets).to(output.dtype)
+			relative_l2_error = (output - targets)**2 / (output.detach()**2 + 0.01)
 			loss = relative_l2_error.mean()
 
 			losses.append(loss.item())
@@ -348,6 +379,7 @@ if __name__ == "__main__":
 			optimizer.step()
 
 			if iter % interval == 0:
+				#print("iter: ", iter, "interval ", interval)
 				loss_val = loss.item()
 				torch.cuda.synchronize()
 				elapsed_time = time.perf_counter() - prev_time
@@ -370,6 +402,38 @@ if __name__ == "__main__":
 				if iter > 0 and interval < 1000:
 					interval *= 10
 
+			# validation
+			if iter % val_gap == 0:
+				with torch.no_grad():
+					output = model(test_input)
+
+					# output = torch.exp(output) - 1
+					output = output / test_jacobian
+					output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+					# output = nolow(output)
+
+					l2_error = (output - test_color.to(output.dtype))**2
+					loss = l2_error.mean()
+
+					# test_color = nolow(test_color.to(output.dtype))
+					# relative_l2_error = (output - test_color)**2 / (output.detach()**2 + 0.01)
+					# loss = relative_l2_error.mean()
+
+					test_losses.append(loss.item())
+
+					# save test loss
+					filename = result_dir + prefix + '_' + method
+					curloss = np.array(test_losses)
+
+					np.save(filename + '_val_loss.npy', curloss)
+					plt.plot(curloss)
+					plt.yscale('log')
+					plt.xlabel('steps')
+					plt.title('loss, step ' + str(i))
+					plt.savefig(filename+'_val_loss_lr'+str(lr)+'.png')
+					plt.close()
+
+
 			iter += 1
 
 			if iter >= args.n_steps:
@@ -378,12 +442,16 @@ if __name__ == "__main__":
 
 
 	# save model
-	filename = result_dir + prefix + '_'+method + '.pth'
+	filename = result_dir + prefix + '_' + method + '.pth'
 	torch.save(model, filename)
 
 
 	light = light.reshape(numdir, resolution[0], resolution[1], dir_dim)
 	view = view.reshape(numdir, resolution[0], resolution[1], dir_dim)
+	test_light = test_light.reshape(numdir2, resolution[0], resolution[1], dir_dim)
+	test_view = test_view.reshape(numdir2, resolution[0], resolution[1], dir_dim)
+	test_jacobian = test_jacobian.reshape(numdir2, resolution[0], resolution[1], 1)
+
 	with torch.no_grad():
 		for index in range(0, numdir, gap):
 			curlocation = dim12.detach().cpu().numpy()
@@ -394,10 +462,31 @@ if __name__ == "__main__":
 			curoutput = model(curinput)
 			curoutput = torch.exp(curoutput) - 1
 
+			curoutput = curoutput / jacobian[index].reshape(-1, 1)
+			curoutput = torch.nan_to_num(curoutput, nan=0.0, posinf=0.0, neginf=0.0)
+
 			curoutput = curoutput.reshape(img_shape).clamp(0.0).detach().cpu().numpy()
 
 			curoutput = mi.Bitmap(curoutput).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
 			filename = image_dir + 'color_' +str(index)+ '_' + method + '_pred.exr'
+			curoutput.write(filename)
+
+		for index in range(0, numdir2, gap2):
+			curlocation = dim12.detach().cpu().numpy()
+			curlight = test_light[index].reshape(-1, dir_dim)
+			curview = test_view[index].reshape(-1, dir_dim)
+			curinput = np.concatenate((curlocation, curlight, curview), axis=-1)
+			curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
+			curoutput = model(curinput)
+			curoutput = torch.exp(curoutput) - 1
+
+			curoutput = curoutput / test_jacobian[index].reshape(-1, 1)
+			curoutput = torch.nan_to_num(curoutput, nan=0.0, posinf=0.0, neginf=0.0)
+
+			curoutput = curoutput.reshape(img_shape).clamp(0.0).detach().cpu().numpy()
+
+			curoutput = mi.Bitmap(curoutput).convert(mi.Bitmap.PixelFormat.RGB, mi.Struct.Type.Float32)
+			filename = image_dir + 'color_' +str(index)+ '_' + method + '_val_pred.exr'
 			curoutput.write(filename)
 
 	print("done.")

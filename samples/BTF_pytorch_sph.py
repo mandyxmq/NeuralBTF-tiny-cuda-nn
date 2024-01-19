@@ -41,6 +41,7 @@ import random
 from torch.utils.data import Dataset
 import mitsuba as mi
 import numbers
+import gc
 
 mi.set_variant('cuda_ad_rgb')
 
@@ -200,7 +201,6 @@ def get_args():
 	parser.add_argument("--val_gap", type=int, default=50, help="gap for validation")
 	parser.add_argument("--numlayer", type=int, default=4, help="number of layers")
 	parser.add_argument("--loss", type=int, default=1, help="training loss, 0 is log, 1 is pure l2, 2 is relative l2")
-	parser.add_argument("--train_len", type=int, default=2000, help="training length")
 
 	args = parser.parse_args()
 	return args
@@ -236,7 +236,6 @@ if __name__ == "__main__":
 	val_gap = args.val_gap
 	numlayer = args.numlayer
 	data2 = args.data2
-	train_len = args.train_len
 
 	# directories for saving results
 	today = datetime.now()
@@ -260,10 +259,9 @@ if __name__ == "__main__":
 		config = json.load(config_file)
 
 	n_channels = 3
-	n_aux = 0
-	dir_dim = 2
+	dir_dim = 3
 
-	model = tcnn.NetworkWithInputEncoding(n_input_dims = 2 + 2 * dir_dim, n_output_dims = n_channels + n_aux, encoding_config=config["encoding"], network_config=config["network"]).to(device)
+	model = tcnn.NetworkWithInputEncoding(n_input_dims = 2 + 2 * dir_dim, n_output_dims = n_channels, encoding_config=config["encoding"], network_config=config["network"]).to(device)
 	print(model)
 
 	#===================================================================================================
@@ -313,12 +311,13 @@ if __name__ == "__main__":
 		light = np.concatenate((light, light2), axis=0)
 		jacobian_np = np.concatenate((jacobian_np, jacobian_np2), axis=0)
 
+	viewz = np.sqrt(1 - view[:, :, :, 0]**2 - view[:, :, :, 1]**2)
+	view = np.concatenate((view, viewz[:,:,:,np.newaxis]), axis=-1)
+	print("view", view.shape)
 
-	# take train_len data
-	view = view[0:train_len]
-	color = color[0:train_len]
-	light = light[0:train_len]
-	jacobian_np = jacobian_np[0:train_len]
+	lightz = np.sqrt(1 - light[:, :, :, 0]**2 - light[:, :, :, 1]**2)
+	light = np.concatenate((light, lightz[:,:,:,np.newaxis]), axis=-1)
+	print("light", light.shape)
 
 	numdir = color.shape[0]
 	resolution = color.shape[1:3]
@@ -343,6 +342,14 @@ if __name__ == "__main__":
 	test_light = test_light[:, 0:yrange, 0:xrange, :]
 	test_location = test_location[:, 0:yrange, 0:xrange, :]
 	test_jacobian = test_jacobian[:, 0:yrange, 0:xrange, :]
+
+	test_viewz = np.sqrt(1 - test_view[:, :, :, 0]**2 - test_view[:, :, :, 1]**2)
+	test_view = np.concatenate((test_view, test_viewz[:,:,:,np.newaxis]), axis=-1)
+	print("test_view", test_view.shape)
+
+	test_lightz = np.sqrt(1 - test_light[:, :, :, 0]**2 - test_light[:, :, :, 1]**2)
+	test_light = np.concatenate((test_light, test_lightz[:,:,:,np.newaxis]), axis=-1)
+	print("test_light", test_light.shape)
 
 	numdir2 = test_color.shape[0]	
 
@@ -398,8 +405,8 @@ if __name__ == "__main__":
 
 	# test data
 	test_location = test_location.reshape(-1, 2)
-	test_light = test_light.reshape(-1, 2)
-	test_view = test_view.reshape(-1, 2)
+	test_light = test_light.reshape(-1, dir_dim)
+	test_view = test_view.reshape(-1, dir_dim)
 
 	test_input = np.concatenate((test_location, test_light, test_view), axis=-1)
 	test_input = torch.tensor(test_input, device=device, dtype=torch.float32)
@@ -411,6 +418,9 @@ if __name__ == "__main__":
 
 	dataset = BTFdataset(input, color, jacobian)
 	dataloader = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, drop_last=True)
+
+	del view2, color2, light2, jacobian_np2, lightz, viewz, test_viewz, test_lightz
+	gc.collect()
 
 
 	losses = []
@@ -424,7 +434,7 @@ if __name__ == "__main__":
 			model.train()
 
 			batch = torch.rand([batch_ele, 2], device=device, dtype=torch.float32)
-			curinput = torch.cat((batch, input_data.reshape(-1, 4)), dim=-1)
+			curinput = torch.cat((batch, input_data.reshape(-1, 2*dir_dim)), dim=-1)
 			output = model(curinput)
 
 			# log
@@ -484,22 +494,31 @@ if __name__ == "__main__":
 			if iter % val_gap == 0:
 				model.eval()
 				with torch.no_grad():
-					output = model(test_input)
 
-					if args.loss == 0:
-						# log
-						output = torch.exp(output) - 1
-						output = output / test_jacobian
-						output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
-						output = nolow(output)
-						l2_error = (output - nolow(test_color.to(output.dtype)))**2
-						loss = l2_error.mean()
-					else:
-						# pure l2 loss
-						output = output / test_jacobian
-						output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
-						l2_error = (output - test_color.to(output.dtype))**2
-						loss = l2_error.mean()
+					# do it in batches
+					val_loss = 0
+					num_chunk = 5
+					unit_num = int(test_input.shape[0] / num_chunk)
+
+					for i in range(0, num_chunk):
+						output = model(test_input[i*unit_num:(i+1)*unit_num])
+
+						if args.loss == 0:
+							# log
+							output = torch.exp(output) - 1
+							output = output / test_jacobian[i*unit_num:(i+1)*unit_num]
+							output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+							output = nolow(output)
+							l2_error = (output - nolow(test_color[i*unit_num:(i+1)*unit_num].to(output.dtype)))**2
+							loss = l2_error.mean()
+						else:
+							# pure l2 loss
+							output = output / test_jacobian[i*unit_num:(i+1)*unit_num]
+							output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+							l2_error = (output - test_color[i*unit_num:(i+1)*unit_num].to(output.dtype))**2
+							loss = l2_error.mean()
+						
+						val_loss += loss.item() / num_chunk
 
 
 					# # print("loss", loss.item())
@@ -518,7 +537,7 @@ if __name__ == "__main__":
 					# l2_error = (output - test_color.to(output.dtype))**2
 					# loss = l2_error.mean()
 
-					test_losses.append(loss.item())
+					test_losses.append(val_loss)
 
 					# save test loss
 					filename = result_dir + prefix + '_' + method

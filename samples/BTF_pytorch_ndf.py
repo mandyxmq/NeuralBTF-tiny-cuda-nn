@@ -60,18 +60,18 @@ sys.path.insert(0, SCRIPTS_DIR)
 
 
 class BTFdataset(Dataset):
-	def __init__(self, input, output, jacobian):
+	def __init__(self, input, output, half_vector):
 		super().__init__()
 		self.input = input
 		self.output = output
-		self.jacobian = jacobian
+		self.half_vector = half_vector
 
 	def __len__(self):
 		return self.input.shape[0]
 
 	def __getitem__(self, idx): 
 
-		return self.input[idx], self.output[idx], self.jacobian[idx], idx
+		return self.input[idx], self.output[idx], self.half_vector[idx], idx
 			
 def yuv_to_rgb(x):
 
@@ -181,13 +181,14 @@ def get_args():
 
 	parser.add_argument("--data", default="BTFdata/real_sari_01_factor3.hdf5", help="data to match")
 	parser.add_argument("--data2", default="", help="retro data")
+	parser.add_argument("--ndf", default="", help="ndf data")
 	parser.add_argument("--test_data", default="BTFdata/real_sari_01_factor3.hdf5", help="data to test")
 	parser.add_argument("--config", default="data/config_hash_naive.json", help="JSON config for tiny-cuda-nn")
 	parser.add_argument("--n_steps", type=int, default=20000, help="Number of training steps")
 	parser.add_argument("--batch_size", type=int, default=4, help="power of 2 batch size") # 10 is good, 19 diverges
 	parser.add_argument("--interval", type=int, default=100, help="interval for printing and saving results")
 	parser.add_argument("--prefix", default="sari_01", help="prefix for saving results")
-	parser.add_argument("--method", default="naive", help="method for computing hash")
+	parser.add_argument("--method", default="naive", help="training method")
 	parser.add_argument("--gap", type=int, default=50, help="gap for saving results")
 	parser.add_argument("--gap2", type=int, default=20, help="gap for saving results")
 	parser.add_argument("--gt", type=int, default=1, help="save ground truth")
@@ -200,7 +201,6 @@ def get_args():
 	parser.add_argument("--val_gap", type=int, default=50, help="gap for validation")
 	parser.add_argument("--numlayer", type=int, default=4, help="number of layers")
 	parser.add_argument("--loss", type=int, default=1, help="training loss, 0 is log, 1 is pure l2, 2 is relative l2")
-	parser.add_argument("--train_len", type=int, default=2000, help="training length")
 
 	args = parser.parse_args()
 	return args
@@ -236,7 +236,6 @@ if __name__ == "__main__":
 	val_gap = args.val_gap
 	numlayer = args.numlayer
 	data2 = args.data2
-	train_len = args.train_len
 
 	# directories for saving results
 	today = datetime.now()
@@ -285,14 +284,11 @@ if __name__ == "__main__":
 		view = hdf[keys[0]][:]
 		color = hdf[keys[2]][:]
 		light = hdf[keys[3]][:]
-		jacobian_np = hdf[keys[4]][:]
 
 	view = view[:, 0:yrange, 0:xrange, :]
 	color = color[:, 0:yrange, 0:xrange, :]
 	light = light[:, 0:yrange, 0:xrange, :]
-	jacobian_np = jacobian_np[:, 0:yrange, 0:xrange, :]
-
-
+	
 	# extra training data
 	if data2 != "":
 		with h5py.File(args.data2, 'r') as hdf:
@@ -300,25 +296,16 @@ if __name__ == "__main__":
 			view2 = hdf[keys[0]][:]
 			color2 = hdf[keys[2]][:]
 			light2 = hdf[keys[3]][:]
-			jacobian_np2 = hdf[keys[4]][:]
 
 		view2 = view2[:, 0:yrange, 0:xrange, :]
 		color2 = color2[:, 0:yrange, 0:xrange, :]
 		light2 = light2[:, 0:yrange, 0:xrange, :]
-		jacobian_np2 = jacobian_np2[:, 0:yrange, 0:xrange, :]
 
 		# combine data
 		view = np.concatenate((view, view2), axis=0)
 		color = np.concatenate((color, color2), axis=0)
 		light = np.concatenate((light, light2), axis=0)
-		jacobian_np = np.concatenate((jacobian_np, jacobian_np2), axis=0)
 
-
-	# take train_len data
-	view = view[0:train_len]
-	color = color[0:train_len]
-	light = light[0:train_len]
-	jacobian_np = jacobian_np[0:train_len]
 
 	numdir = color.shape[0]
 	resolution = color.shape[1:3]
@@ -328,6 +315,18 @@ if __name__ == "__main__":
 	print("resolution", resolution)
 	print("n_pixels", n_pixels)
 
+	lightz = np.sqrt(1 - light[:, :, :, 0]**2 - light[:, :, :, 1]**2)
+	viewz = np.sqrt(1 - view[:, :, :, 0]**2 - view[:, :, :, 1]**2)
+	half_vector = np.stack((light[:, :, :, 0] + view[:, :, :, 0], light[:, :, :, 1] + view[:, :, :, 1], lightz + viewz), axis=-1)
+	# normalize
+	half_vector = half_vector / np.linalg.norm(half_vector, axis=-1, keepdims=True)
+	print("half_vector.shape", half_vector.shape)
+
+	# load trained ndf model
+	ndf_model = torch.load(args.ndf)
+	ndf_model = ndf_model.to(device)
+	ndf_model.eval()
+
 
 	# read in test data
 	with h5py.File(args.test_data, 'r') as hdf:
@@ -336,15 +335,20 @@ if __name__ == "__main__":
 		test_location = hdf[keys[1]][:]
 		test_color = hdf[keys[2]][:]
 		test_light = hdf[keys[3]][:]
-		test_jacobian = hdf[keys[4]][:]
 
 	test_view = test_view[:, 0:yrange, 0:xrange, :]
 	test_color = test_color[:, 0:yrange, 0:xrange, :]
 	test_light = test_light[:, 0:yrange, 0:xrange, :]
 	test_location = test_location[:, 0:yrange, 0:xrange, :]
-	test_jacobian = test_jacobian[:, 0:yrange, 0:xrange, :]
 
 	numdir2 = test_color.shape[0]	
+
+	test_lightz = np.sqrt(1 - test_light[:, :, :, 0]**2 - test_light[:, :, :, 1]**2)
+	test_viewz = np.sqrt(1 - test_view[:, :, :, 0]**2 - test_view[:, :, :, 1]**2)
+	test_half_vector = np.stack((test_light[:, :, :, 0] + test_view[:, :, :, 0], test_light[:, :, :, 1] + test_view[:, :, :, 1], test_lightz + test_viewz), axis=-1)
+	# normalize
+	test_half_vector = test_half_vector / np.linalg.norm(test_half_vector, axis=-1, keepdims=True)
+	print("test_half_vector.shape", test_half_vector.shape)
 
 	half_dim1 =  0.5 / resolution[0]
 	half_dim2 =  0.5 / resolution[1]
@@ -391,8 +395,7 @@ if __name__ == "__main__":
 	input = torch.tensor(input, device=device, dtype=torch.float32)
 	print("input", input.shape)
 	color = torch.tensor(color, device=device, dtype=torch.float32)
-
-	jacobian = torch.tensor(jacobian_np, device=device, dtype=torch.float32)
+	half_vector_xy = torch.tensor(half_vector[:,:,:,0:2], device=device, dtype=torch.float32)
 
 	total_num = input.shape[0]
 
@@ -406,10 +409,11 @@ if __name__ == "__main__":
 	print("test_input", test_input.shape)
 
 	test_color = torch.tensor(test_color.reshape(-1, 3), device=device, dtype=torch.float32)
-	test_jacobian = torch.tensor(test_jacobian.reshape(-1, 1), device=device, dtype=torch.float32)
 
+	test_ndf_input = np.concatenate((test_location, test_half_vector[:,:,:,0:2].reshape(-1, 2)), axis=-1)
+	test_ndf_input = torch.tensor(test_ndf_input, device=device, dtype=torch.float32)
 
-	dataset = BTFdataset(input, color, jacobian)
+	dataset = BTFdataset(input, color, half_vector_xy)
 	dataloader = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, drop_last=True)
 
 
@@ -419,7 +423,7 @@ if __name__ == "__main__":
 	go = True
 	while go:
 		
-		for (input_data, output_data, jacobian_data, idx) in dataloader:
+		for (input_data, output_data, half_vector_data, idx) in dataloader:
 
 			model.train()
 
@@ -427,26 +431,30 @@ if __name__ == "__main__":
 			curinput = torch.cat((batch, input_data.reshape(-1, 4)), dim=-1)
 			output = model(curinput)
 
+			# evaluate ndf
+			ndf_input = torch.cat((batch, half_vector_data.reshape(-1, 2)), dim=-1)
+			ndf_output = ndf_model(ndf_input)
+
 			# log
 			if args.loss == 0:
+				output = torch.exp(output) - 1
+				output = output * ndf_output
+				output = nolow(output)
 
-				curjacobian = query_jacobian(jacobian_data, batch)
-				targets = nolow(query_images(output_data, batch) * curjacobian)
+				targets = query_images(output_data, batch)
 				l2_error = (output - targets.to(output.dtype))**2
 				loss = l2_error.mean()
 
 			# pure l2 loss
-			elif args.loss == 1:
-				
-				curjacobian = query_jacobian(jacobian_data, batch)
-				targets = query_images(output_data, batch) * curjacobian
-				l2_error = (output - targets.to(output.dtype))**2
+			elif args.loss == 1:				
+				targets = query_images(output_data, batch)
+				l2_error = (output*ndf_output - targets.to(output.dtype))**2
 				loss = l2_error.mean()
 
-			# relative l2 loss, no log
-			else:
-				curjacobian = query_jacobian(jacobian_data, batch)
-				targets = query_images(output_data, batch) * curjacobian
+			# relative l2 loss
+			else:				
+				output = output * ndf_output
+				targets = query_images(output_data, batch)
 				relative_l2_error = (output - targets)**2 / (output.detach()**2 + 0.01)
 				loss = relative_l2_error.mean()
 
@@ -485,19 +493,19 @@ if __name__ == "__main__":
 				model.eval()
 				with torch.no_grad():
 					output = model(test_input)
+					ndf_output = ndf_model(test_ndf_input)
 
 					if args.loss == 0:
 						# log
 						output = torch.exp(output) - 1
-						output = output / test_jacobian
+						output = output * ndf_output
 						output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
 						output = nolow(output)
 						l2_error = (output - nolow(test_color.to(output.dtype)))**2
 						loss = l2_error.mean()
 					else:
 						# pure l2 loss
-						output = output / test_jacobian
-						output = torch.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+						output = output * ndf_output
 						l2_error = (output - test_color.to(output.dtype))**2
 						loss = l2_error.mean()
 
@@ -544,12 +552,10 @@ if __name__ == "__main__":
 	filename = result_dir + prefix + '_' + method + '.pth'
 	torch.save(model, filename)
 
-
 	light = light.reshape(numdir, resolution[0], resolution[1], dir_dim)
 	view = view.reshape(numdir, resolution[0], resolution[1], dir_dim)
 	test_light = test_light.reshape(numdir2, resolution[0], resolution[1], dir_dim)
 	test_view = test_view.reshape(numdir2, resolution[0], resolution[1], dir_dim)
-	test_jacobian = test_jacobian.reshape(numdir2, resolution[0], resolution[1], 1)
 
 	with torch.no_grad():
 		for index in range(0, numdir, gap):
@@ -560,10 +566,17 @@ if __name__ == "__main__":
 			curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
 			curoutput = model(curinput)
 
+			curhalf_vector = half_vector[index][:,:,0:2].reshape(-1, dir_dim)
+
+			curndf = ndf_model(torch.tensor(np.concatenate((curlocation, curhalf_vector.reshape(-1, 2)), axis=-1), device=device, dtype=torch.float32))
+
 			if args.loss == 0:
 				curoutput = torch.exp(curoutput) - 1
 
-			curoutput = curoutput / jacobian[index].reshape(-1, 1)
+			if args.method == 'ndf':
+				curoutput = curoutput * curndf.reshape(-1, 3)
+			else:
+				curoutput = curoutput * curndf.reshape(-1, 1)
 			curoutput = torch.nan_to_num(curoutput, nan=0.0, posinf=0.0, neginf=0.0)
 
 			curoutput = curoutput.reshape(img_shape).clamp(0.0).detach().cpu().numpy()
@@ -580,10 +593,17 @@ if __name__ == "__main__":
 			curinput = torch.tensor(curinput, device=device, dtype=torch.float32)
 			curoutput = model(curinput)
 
+			curhalf_vector = test_half_vector[index][:,:,0:2].reshape(-1, dir_dim)
+			curndf = ndf_model(torch.tensor(np.concatenate((curlocation, curhalf_vector.reshape(-1, 2)), axis=-1), device=device, dtype=torch.float32))
+
 			if args.loss == 0:
 				curoutput = torch.exp(curoutput) - 1
 
-			curoutput = curoutput / test_jacobian[index].reshape(-1, 1)
+			if args.method == 'ndf':
+				curoutput = curoutput * curndf.reshape(-1, 3)
+			else:
+				curoutput = curoutput * curndf.reshape(-1, 1)
+
 			curoutput = torch.nan_to_num(curoutput, nan=0.0, posinf=0.0, neginf=0.0)
 
 			curoutput = curoutput.reshape(img_shape).clamp(0.0).detach().cpu().numpy()
